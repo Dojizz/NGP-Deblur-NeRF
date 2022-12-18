@@ -54,9 +54,9 @@ def config_parser():
                         help='exponential learning rate decay (in 1000 steps)')
     # generate N_rand # of rays, divide into chunk # of batch
     # then generate chunk * N_samples # of points, divide into netchunk # of batch
-    parser.add_argument("--chunk", type=int, default=1024 * 32,
+    parser.add_argument("--chunk", type=int, default=1024 * 64,
                         help='number of rays processed in parallel, decrease if running out of memory')
-    parser.add_argument("--netchunk", type=int, default=1024 * 64,
+    parser.add_argument("--netchunk", type=int, default=1024 * 128,
                         help='number of pts sent through network in parallel, decrease if running out of memory')
     parser.add_argument("--no_reload", action='store_true',
                         help='do not reload weights from saved ckpt')
@@ -75,19 +75,21 @@ def config_parser():
     parser.add_argument("--use_viewdirs", action='store_true',
                         help='use full 5D input instead of 3D')
 
-    # add support for hash encoding, sparsity loss and variation loss
+    # add support for hash encoding, sparsity loss, variation loss, different optimizer
     parser.add_argument("--i_embed", type=int, default=0,
                         help='set 2 for spherical, set 1 for hashed embedding, set 0 for default positional encoding, -1 for none')
     parser.add_argument("--i_embed_views", type=int, default=0,
                         help='set 2 for spherical, set 1 for hashed embedding, set 0 for default positional encoding, -1 for none')
-    parser.add_argument("--finest_res",   type=int, default=512,
+    parser.add_argument("--finest_res", type=int, default=512,
                         help='finest resolultion for hashed embedding')
-    parser.add_argument("--log2_hashmap_size",   type=int, default=19,
+    parser.add_argument("--log2_hashmap_size", type=int, default=19,
                         help='log2 of hashmap size')
     parser.add_argument("--sparse_loss_weight", type=float, default=0, # default=1e-10
                         help='learning rate')
     parser.add_argument("--tv_loss_weight", type=float, default=0., #default=1e-6
                         help='learning rate')
+    parser.add_argument("--multi_optimizer", type=int, default=0, help='set 0 for one optimizer, set 1 for multiple optimizer')
+
 
     parser.add_argument("--multires", type=int, default=10,
                         help='log2 of max freq for positional encoding (3D location)')
@@ -345,10 +347,11 @@ def train():
 
     # Create nerf model
     nerf = NeRFAll(args, kernelnet)
-    nerf = nn.DataParallel(nerf, list(range(args.num_gpu)))
+    if(args.num_gpu > 1):
+        nerf = nn.DataParallel(nerf, list(range(args.num_gpu)))
 
     # Create optimizer
-    if args.i_embed == 1:
+    if args.i_embed == 1 and args.multi_optimizer == 0:
         params = list(nerf.mlp_coarse.parameters())
         if args.N_importance > 0:
             params += list(nerf.mlp_fine.parameters())
@@ -361,6 +364,26 @@ def train():
                             {'params': params, 'weight_decay': 1e-6},
                             {'params': embedding_params, 'eps': 1e-15}
                         ], lr=args.lrate, betas=(0.9, 0.99))
+    elif args.i_embed == 1 and args.multi_optimizer == 1:
+        # nerf, embedding part use ngp setting
+        nerf_params = list(nerf.mlp_coarse.parameters())
+        if args.N_importance > 0:
+            nerf_params += list(nerf.mlp_fine.parameters())
+        embedding_params = list(nerf.embed_fn.parameters())
+        # deblur part use deblur setting
+        if args.kernel_type == 'deformablesparsekernel':
+            deblur_params = list(nerf.kernelsnet.parameters())
+        if args.tone_mapping_type == 'learn':
+            deblur_params += list(nerf.tonemapping.parameters())
+        # define optimizer, nerf part use lrate=0.01 lrate_decay=10, deblur part use lrate = 5e-4 lrate_decay = 250
+        ngp_optimizer = RAdam([
+                            {'params': nerf_params, 'weight_decay': 1e-6},
+                            {'params': embedding_params, 'eps': 1e-15}
+                        ], lr=0.01 , betas=(0.9, 0.99))
+        deblur_optimizer = torch.optim.Adam(params=deblur_params,
+                                    lr=args.lrate,
+                                    betas=(0.9, 0.999))
+
     else:
         optim_params = nerf.parameters()
         optimizer = torch.optim.Adam(params=optim_params,
@@ -606,18 +629,35 @@ def train():
             loss = loss + args.tv_loss_weight * TV_loss
             if i>1000:
                 args.tv_loss_weight = 0.0
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if args.multi_optimizer == 0:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        else:
+            ngp_optimizer.zero_grad()
+            deblur_optimizer.zero_grad()
+            loss.backward()
+            ngp_optimizer.step()
+            deblur_optimizer.step()
 
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
-        decay_rate = 0.1
-        decay_steps = args.lrate_decay * 1000
-        new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = new_lrate
+        if args.multi_optimizer == 0:
+            decay_rate = 0.1
+            decay_steps = args.lrate_decay * 1000
+            new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = new_lrate
+        else:
+            decay_rate = 0.1
+            decay_steps = 10 * 1000
+            new_ngp_lrate = 0.01 * (decay_rate ** (global_step / decay_steps))
+            decay_steps = 250 * 1000
+            new_deblur_lrate = 5e-4 * (decay_rate ** (global_step / decay_steps))
+            for param_group in ngp_optimizer.param_groups:
+                param_group['lr'] = new_ngp_lrate
+            for param_group in deblur_optimizer.param_groups:
+                param_group['lr'] = new_deblur_lrate
         ################################
 
         # dt = time.time() - time0
