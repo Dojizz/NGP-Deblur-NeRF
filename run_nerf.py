@@ -364,6 +364,7 @@ def train():
                             {'params': params, 'weight_decay': 1e-6},
                             {'params': embedding_params, 'eps': 1e-15}
                         ], lr=args.lrate, betas=(0.9, 0.99))
+
     elif args.i_embed == 1 and args.multi_optimizer == 1:
         # nerf, embedding part use ngp setting
         nerf_params = list(nerf.mlp_coarse.parameters())
@@ -381,7 +382,7 @@ def train():
                             {'params': embedding_params, 'eps': 1e-15}
                         ], lr=0.01 , betas=(0.9, 0.99))
         deblur_optimizer = torch.optim.Adam(params=deblur_params,
-                                    lr=args.lrate,
+                                    lr=5e-4,
                                     betas=(0.9, 0.999))
 
     else:
@@ -629,6 +630,7 @@ def train():
             loss = loss + args.tv_loss_weight * TV_loss
             if i>1000:
                 args.tv_loss_weight = 0.0
+
         if args.multi_optimizer == 0:
             optimizer.zero_grad()
             loss.backward()
@@ -725,14 +727,14 @@ def train():
                 test_mse = compute_img_metric(rgbs, target_rgb_ldr, 'mse')
                 test_psnr = compute_img_metric(rgbs, target_rgb_ldr, 'psnr')
                 test_ssim = compute_img_metric(rgbs, target_rgb_ldr, 'ssim')
-                test_lpips = compute_img_metric(rgbs, target_rgb_ldr, 'lpips')
+                # test_lpips = compute_img_metric(rgbs, target_rgb_ldr, 'lpips')
                 if isinstance(test_lpips, torch.Tensor):
                     test_lpips = test_lpips.item()
 
                 tensorboard.add_scalar("Test MSE", test_mse, global_step)
                 tensorboard.add_scalar("Test PSNR", test_psnr, global_step)
                 tensorboard.add_scalar("Test SSIM", test_ssim, global_step)
-                tensorboard.add_scalar("Test LPIPS", test_lpips, global_step)
+                # tensorboard.add_scalar("Test LPIPS", test_lpips, global_step)
 
             with open(test_metric_file, 'a') as outfile:
                 outfile.write(f"iter{i}/globalstep{global_step}: MSE:{test_mse:.8f} PSNR:{test_psnr:.8f}"
