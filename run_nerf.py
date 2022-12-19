@@ -728,8 +728,8 @@ def train():
                 test_psnr = compute_img_metric(rgbs, target_rgb_ldr, 'psnr')
                 test_ssim = compute_img_metric(rgbs, target_rgb_ldr, 'ssim')
                 # test_lpips = compute_img_metric(rgbs, target_rgb_ldr, 'lpips')
-                if isinstance(test_lpips, torch.Tensor):
-                    test_lpips = test_lpips.item()
+                # if isinstance(test_lpips, torch.Tensor):
+                #     test_lpips = test_lpips.item()
 
                 tensorboard.add_scalar("Test MSE", test_mse, global_step)
                 tensorboard.add_scalar("Test PSNR", test_psnr, global_step)
@@ -737,9 +737,10 @@ def train():
                 # tensorboard.add_scalar("Test LPIPS", test_lpips, global_step)
 
             with open(test_metric_file, 'a') as outfile:
+                # outfile.write(f"iter{i}/globalstep{global_step}: MSE:{test_mse:.8f} PSNR:{test_psnr:.8f}"
+                #               f" SSIM:{test_ssim:.8f} LPIPS:{test_lpips:.8f}\n")
                 outfile.write(f"iter{i}/globalstep{global_step}: MSE:{test_mse:.8f} PSNR:{test_psnr:.8f}"
-                              f" SSIM:{test_ssim:.8f} LPIPS:{test_lpips:.8f}\n")
-
+                               f" SSIM:{test_ssim:.8f} \n")
             print('Saved test set')
 
         if i % args.i_tensorboard == 0:
